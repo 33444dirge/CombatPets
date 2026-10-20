@@ -4,19 +4,37 @@ import org.jetbrains.annotations.NotNull;
 import su.nightexpress.combatpets.PetsPlugin;
 import su.nightexpress.nightcore.config.FileConfig;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Stream;
 
 public final class PluginConfigMigration {
 
     private static final String RANK_PATH = "Pets.Amount_Per_Rank";
     private static final String CHORUS_ITEMS_PATH = "Food.chorus_fruits.Items";
+    private static final List<String> BROKEN_ATTRIBUTE_TARGET_COMMENTS = List.of(
+        "目标值按品质配置的全部关联属性点计算，玩家仍需手动分配属性点。",
+        "路径格式：Attributes.Target.<宠物ID>.<属性ID>。"
+    );
     private static final Map<String, Integer> DEFAULT_RANK_LIMITS = createDefaultRankLimits();
 
     private PluginConfigMigration() {
     }
 
     public static void migrate(@NotNull PetsPlugin plugin) {
+        try {
+            int repaired = repairTierAttributeComments(plugin.getDataFolder().toPath().resolve("pets/tiers"));
+            if (repaired > 0) plugin.info("已修复 " + repaired + " 个宠物品质配置文件中的属性注释格式。");
+        }
+        catch (IOException exception) {
+            throw new IllegalStateException("无法安全修复宠物品质配置，已停止加载以保护现有数据。", exception);
+        }
+
         FileConfig config = plugin.getConfig();
         boolean changed = migrateRankLimits(config);
         changed |= migrateChorusFruit(config);
@@ -27,6 +45,33 @@ public final class PluginConfigMigration {
         // them so a migrated server uses the new limits immediately, including
         // after a PlugManX reload, instead of only after the next restart.
         config.initializeOptions(Config.class);
+    }
+
+    static int repairTierAttributeComments(@NotNull Path directory) throws IOException {
+        if (!Files.isDirectory(directory)) return 0;
+
+        int repaired = 0;
+        try (Stream<Path> paths = Files.list(directory)) {
+            for (Path path : paths.filter(Files::isRegularFile)
+                .filter(file -> file.getFileName().toString().endsWith(FileConfig.EXTENSION)).toList()) {
+                List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+                boolean changed = false;
+
+                for (int index = 0; index < lines.size(); index++) {
+                    String line = lines.get(index);
+                    if (!BROKEN_ATTRIBUTE_TARGET_COMMENTS.contains(line)) continue;
+
+                    lines.set(index, "  # " + line);
+                    changed = true;
+                }
+
+                if (!changed) continue;
+
+                Files.write(path, lines, StandardCharsets.UTF_8);
+                repaired++;
+            }
+        }
+        return repaired;
     }
 
     static boolean migrateChorusFruit(@NotNull FileConfig config) {

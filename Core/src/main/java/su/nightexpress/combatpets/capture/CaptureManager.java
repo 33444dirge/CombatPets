@@ -14,6 +14,7 @@ import su.nightexpress.combatpets.api.pet.Template;
 import su.nightexpress.combatpets.api.pet.Tier;
 import su.nightexpress.combatpets.api.pet.event.capture.PetCaptureStartEvent;
 import su.nightexpress.combatpets.capture.config.CaptureConfig;
+import su.nightexpress.combatpets.capture.config.CaptureTierPolicy;
 import su.nightexpress.combatpets.config.Keys;
 import su.nightexpress.combatpets.config.Lang;
 import su.nightexpress.combatpets.config.Perms;
@@ -209,7 +210,8 @@ public class CaptureManager extends AbstractManager<PetsPlugin> {
     public Tier getTierByWeight() {
         Map<Tier, Double> map = new HashMap<>();
         this.plugin.getPetManager().getTiers().forEach(tier -> {
-            if (tier.isCapturable()) {
+            boolean isAllowed = CaptureTierPolicy.isAllowed(CaptureConfig.CAPTURE_ALLOWED_TIERS.get(), tier.getId());
+            if (tier.isCapturable() && isAllowed) {
                 map.put(tier, tier.getWeight());
             }
         });

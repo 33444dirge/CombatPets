@@ -1,6 +1,7 @@
 package su.nightexpress.combatpets.pet.impl;
 
 import org.bukkit.Location;
+import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.block.Block;
@@ -46,6 +47,8 @@ import su.nightexpress.nightcore.util.wrapper.UniParticle;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class PetInstance implements ActivePet {
 
@@ -63,6 +66,7 @@ public final class PetInstance implements ActivePet {
     private final AtomicBoolean removed;
     private final AtomicBoolean moveToOwnerPending;
     private final AtomicInteger waterRestrictedFarLandSeconds;
+    private final Set<Player> inventoryViewers = ConcurrentHashMap.newKeySet();
 
     private boolean equipmentUnlocked;
     private long    nextRegenTime;
@@ -127,6 +131,37 @@ public final class PetInstance implements ActivePet {
     @NotNull
     public Inventory getInventory() {
         return this.inventory;
+    }
+
+    public boolean isRemoved() {
+        return this.removed.get();
+    }
+
+    public void trackInventoryViewer(Player player) {
+        this.inventoryViewers.add(player);
+    }
+
+    public void forgetInventoryViewer(Player player) {
+        this.inventoryViewers.remove(player);
+    }
+
+    private void closeViews() {
+        Set<Player> viewers = new java.util.HashSet<>(this.inventoryViewers);
+        viewers.add(this.owner);
+        for (Player player : viewers) {
+            Runnable close = () -> {
+                if (player.getOpenInventory().getTopInventory().getHolder(false) == this) {
+                    player.closeInventory();
+                }
+                else if (player == this.owner && AbstractMenu.getMenu(player) != null) {
+                    player.closeInventory();
+                }
+                if (player == this.owner) this.removeHealthBar();
+            };
+            if (Bukkit.isOwnedByCurrentRegion(player)) close.run();
+            else PetScheduler.runAtEntity(this.plugin, player, close);
+        }
+        this.inventoryViewers.clear();
     }
 
     @Override
@@ -255,13 +290,7 @@ public final class PetInstance implements ActivePet {
     public void remove() {
         if (!this.removed.compareAndSet(false, true)) return;
 
-        this.removeHealthBar();
-
-        // Close owner's inventory if it's custom engine GUI.
-        Menu menu = AbstractMenu.getMenu(this.getOwner());
-        if (menu != null) {
-            this.getOwner().closeInventory();
-        }
+        this.closeViews();
 
         this.saveData(); // Save pet's settings to the data holder.
         this.getInventory().clear(); // Clear pet's inventory content.
@@ -466,7 +495,7 @@ public final class PetInstance implements ActivePet {
         }
 
         double maxHealth = this.getMaxHealth();
-        double result = Math.max(0, this.entity.getHealth() / maxHealth);
+        double result = HealthBarProgress.normalize(this.entity.getHealth(), maxHealth);
         String title = this.replacePlaceholders().apply(Config.PET_HEALTHBAR_TITLE.get());
 
         this.healthBar.setProgress(result);
@@ -678,6 +707,7 @@ public final class PetInstance implements ActivePet {
     private void returnToCollection(@NotNull MessageLocale message) {
         if (!this.plugin.isEnabled() || !this.removed.compareAndSet(false, true)) return;
 
+        this.closeViews();
         this.saveData();
         this.getInventory().clear();
         if (!this.entity.isDead()) {
@@ -877,5 +907,17 @@ public final class PetInstance implements ActivePet {
 
     public void toggleCombatMode() {
         this.data.setCombatMode(Lists.next(this.data.getCombatMode()));
+    }
+}
+
+final class HealthBarProgress {
+
+    private HealthBarProgress() {
+    }
+
+    static double normalize(double health, double maxHealth) {
+        if (!Double.isFinite(health) || !Double.isFinite(maxHealth) || maxHealth <= 0D) return 0D;
+
+        return Math.clamp(health / maxHealth, 0D, 1D);
     }
 }

@@ -106,9 +106,9 @@ public class PetAI {
     public static <T extends LivingEntity> void updateActivity(@NotNull Mob entity, @NotNull Brain<T> brain) {
         ActivePet holder = PetEntityBridge.getByMobId(entity.getUUID());
         ServerPlayer owner = holder == null ? null : getLocalOwner(holder);
-        if (holder != null && owner == null) {
+        if (owner == null) {
             clearMovementAndCombat(entity, brain);
-            holder.moveToOwner();
+            if (holder != null) holder.moveToOwner();
             brain.setActiveActivityIfPossible(Activity.IDLE);
             entity.setAggressive(false);
             return;
@@ -126,7 +126,7 @@ public class PetAI {
         entity.setAggressive(brain.hasMemoryValue(MemoryModuleType.ATTACK_TARGET));
     }
 
-    private static <T extends LivingEntity> void clearMovementAndCombat(@NotNull Mob entity, @NotNull Brain<T> brain) {
+    static <T extends LivingEntity> void clearMovementAndCombat(@NotNull Mob entity, @NotNull Brain<T> brain) {
             brain.eraseMemory(MemoryModuleType.ANGRY_AT);
             brain.eraseMemory(MemoryModuleType.UNIVERSAL_ANGER);
             brain.eraseMemory(MemoryModuleType.ATTACK_TARGET);

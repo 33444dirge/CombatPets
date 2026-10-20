@@ -9,6 +9,8 @@ import java.util.Set;
 
 public class CaptureConfig {
 
+    public static final ConfigValue<Set<String>> CAPTURE_ALLOWED_TIERS = CaptureTierPolicy.configValue();
+
     public static final ConfigValue<Set<String>> CAPTURE_DISABLED_ENTITY_TYPES = ConfigValue.create("Settings.Disabled_Entity_Types",
         Lists.newSet("warden", "wither", "iron_golem", "ravager", "illusioner", "ender_dragon"),
         "默认禁止玩家捕捉的生物类型 ID。",

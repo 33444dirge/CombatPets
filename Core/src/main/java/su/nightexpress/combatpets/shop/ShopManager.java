@@ -248,8 +248,9 @@ public class ShopManager extends AbstractManager<PetsPlugin> {
     private void addPriceComments(@NotNull FileConfig config) {
         config.setComments("EggPrice", "宠物蛋商店价格设置。");
         config.setComments("EggPrice.Default_Disabled_Pets",
-            "默认关闭商店购买的宠物 ID 列表。仅影响商店，不影响管理员发放或已有宠物。",
-            "从列表移除宠物 ID 即可重新开放购买；这不是永久禁用。",
+            "禁止商店购买和随机种类神秘蛋抽取的宠物 ID 列表。",
+            "不影响管理员发放指定种类的蛋、固定种类神秘蛋或已有宠物。",
+            "从列表移除宠物 ID 即可重新开放购买和随机抽取；这不是永久禁用。",
             "尚未实现的宠物 ID 也会保留，以免未来加入该宠物后意外自动上架。"
         );
         config.setComments("EggPrice.Default_Disabled_Pets_Version", "默认禁售名单的自动迁移版本，请勿手动修改。");
@@ -295,9 +296,15 @@ public class ShopManager extends AbstractManager<PetsPlugin> {
     @Nullable
     public EggPrice getEggPrice(@NotNull Tier tier, @NotNull Template config) {
         synchronized (this.priceLock) {
-            if (this.disabledEggPetIds.contains(config.getId().toLowerCase())) return null;
+            if (this.isEggPetDisabled(config)) return null;
 
             return this.eggPriceMap.getOrDefault(tier.getId(), Collections.emptyMap()).getOrDefault(config.getId(), this.defaultEggPriceMap.get(tier.getId()));
+        }
+    }
+
+    public boolean isEggPetDisabled(@NotNull Template template) {
+        synchronized (this.priceLock) {
+            return this.disabledEggPetIds.contains(template.getId().toLowerCase());
         }
     }
 

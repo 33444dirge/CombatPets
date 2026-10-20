@@ -125,6 +125,13 @@ public class PetBrain {
 
     /** Ticks the replacement brain and selects the plugin's active activity. */
     public static <E extends Mob> void tick(@NotNull E pet, @NotNull ServerLevel level, @NotNull Brain<E> brain) {
+        if (pet instanceof PetEntity petEntity && petEntity.holder().isEmpty()) {
+            PetAI.clearMovementAndCombat(pet, brain);
+            brain.setActiveActivityIfPossible(Activity.IDLE);
+            pet.setAggressive(false);
+            return;
+        }
+
         boolean ownerRiding = PetAI.isOwnerRiding(pet);
         if (ownerRiding) {
             stopAiMovement(pet, brain);

@@ -279,11 +279,12 @@ public class ItemManager extends AbstractManager<PetsPlugin> {
     }
 
     private void handleMysteryEggUse(@NotNull Player player, @NotNull ItemStack itemStack) {
-        Tier tier = this.plugin.getPetManager().getTierByWeight();
+        Tier tier = this.plugin.getPetManager().getMysteryEggTierByWeight();
+        if (tier == null) return;
 
         Template template = this.getEggTemplate(itemStack);
         if (template == null && PDCUtil.getString(itemStack, Keys.eggPetId).isEmpty()) {
-            var templates = this.plugin.getPetManager().getTemplates();
+            var templates = this.plugin.getPetManager().getMysteryEggTemplates();
             if (templates.isEmpty()) return;
 
             template = Rnd.get(templates);

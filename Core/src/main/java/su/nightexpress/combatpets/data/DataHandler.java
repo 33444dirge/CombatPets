@@ -13,9 +13,15 @@ import su.nightexpress.nightcore.db.AbstractUserDataManager;
 import su.nightexpress.nightcore.db.sql.column.Column;
 import su.nightexpress.nightcore.db.sql.column.ColumnType;
 import su.nightexpress.nightcore.db.sql.query.impl.SelectQuery;
+import su.nightexpress.nightcore.db.sql.query.UserQueries;
+import su.nightexpress.nightcore.db.sql.query.impl.UpdateQuery;
 import su.nightexpress.nightcore.db.sql.query.type.ValuedQuery;
 
 import java.sql.ResultSet;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Collection;
 import java.util.List;
 import java.util.function.Function;
@@ -38,6 +44,7 @@ public class DataHandler extends AbstractUserDataManager<PetsPlugin, PetUser> {
 
     @Override
     public void onSynchronize() {
+        if (this.plugin.getPetManager() != null && this.plugin.getPetManager().isShuttingDown()) return;
         this.plugin.getUserManager().getLoaded().forEach(this::synchronizePets);
     }
 
@@ -52,10 +59,12 @@ public class DataHandler extends AbstractUserDataManager<PetsPlugin, PetUser> {
     }*/
 
     private void synchronizePets(@NotNull PetUser user) {
+        if (this.plugin.getPetManager() != null && this.plugin.getPetManager().isShuttingDown()) return;
         if (user.isAutoSavePlanned() || !user.isAutoSyncReady()) return;
 
         PetUser fresh = this.getUser(user.getId());
         if (fresh == null) return;
+        if (this.plugin.getPetManager() != null && this.plugin.getPetManager().isShuttingDown()) return;
 
         String activeId = null;
         Player player = user.getPlayer();
@@ -91,6 +100,42 @@ public class DataHandler extends AbstractUserDataManager<PetsPlugin, PetUser> {
     @Override
     public synchronized void saveUsersFully(@NotNull Collection<PetUser> users) {
         super.saveUsersFully(users);
+    }
+
+    /** Final unload flush: use the existing schema/bindings, but never swallow JDBC failures. */
+    public synchronized void saveUsersForShutdown(@NotNull Collection<PetUser> users) throws SQLException {
+        if (users.isEmpty()) return;
+        UpdateQuery<PetUser> query = UserQueries.updateCommons();
+        this.addUpsertQueryData(query);
+        try (Connection connection = this.getConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement statement = connection.prepareStatement(query.createSQL(this.tableUsers))) {
+                statement.setQueryTimeout(15);
+                int batchSize = 0;
+                for (PetUser user : users) {
+                    query.onExecute(statement, user);
+                    statement.addBatch();
+                    if (++batchSize == 500) {
+                        checkSaveBatch(statement.executeBatch());
+                        statement.clearBatch();
+                        batchSize = 0;
+                    }
+                }
+                if (batchSize != 0) checkSaveBatch(statement.executeBatch());
+                connection.commit();
+            }
+            catch (SQLException | RuntimeException exception) {
+                try { connection.rollback(); }
+                catch (SQLException rollbackFailure) { exception.addSuppressed(rollbackFailure); }
+                throw exception;
+            }
+        }
+    }
+
+    private static void checkSaveBatch(int[] results) throws SQLException {
+        for (int result : results) {
+            if (result == Statement.EXECUTE_FAILED) throw new SQLException("宠物数据批量保存失败。");
+        }
     }
 
     @Override

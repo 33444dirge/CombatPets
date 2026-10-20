@@ -69,6 +69,8 @@ public class PetFightBehaviors {
                 mobInstance.present(MemoryModuleType.NEAREST_VISIBLE_LIVING_ENTITIES)
             ).apply(mobInstance, (lookTarget, attackTarget, attackCooldown, nearest) -> {
                 return (world, pet, i) -> {
+                    if (pet instanceof PetEntity petEntity && petEntity.holder().isEmpty()) return false;
+
                     LivingEntity target = mobInstance.get(attackTarget);
                     if (isHoldingUsableProjectileWeapon(pet)) return false;
                     if (!pet.isWithinMeleeAttackRange(target)) return false;
@@ -83,7 +85,7 @@ public class PetFightBehaviors {
                     pet.doHurtTarget(world, target);
                     pet.lookAt(target, 30f, 30f);
                     if (pet instanceof PetEntity petEntity) {
-                        petEntity.getHolder().doExhaust(ExhaustReason.COMBAT);
+                        petEntity.holder().ifPresent(holder -> holder.doExhaust(ExhaustReason.COMBAT));
                     }
                     attackCooldown.setWithExpiry(true, ticks);
                     return true;

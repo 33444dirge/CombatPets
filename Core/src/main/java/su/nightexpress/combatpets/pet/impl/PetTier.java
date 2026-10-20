@@ -194,14 +194,20 @@ public class PetTier extends AbstractFileData<PetsPlugin> implements Tier {
                 if (!targets.isEmpty()) this.attributeTargets.put(petId.toLowerCase(), targets);
             }
         }
-        config.setComments("Attributes.Target", "管理员设置的属性满点最终值；留空时使用宠物配置中的 Per_Aspect。\n目标值按品质配置的全部关联属性点计算，玩家仍需手动分配属性点。\n路径格式：Attributes.Target.<宠物ID>.<属性ID>。");
+        config.setComments("Attributes.Target",
+            "管理员设置的属性满点最终值；留空时使用宠物配置中的 Per_Aspect。",
+            "目标值按品质配置的全部关联属性点计算，玩家仍需手动分配属性点。",
+            "路径格式：Attributes.Target.<宠物ID>.<属性ID>。");
 
         return true;
     }
 
     @Override
     protected void onSave(@NotNull FileConfig config) {
-        config.setComments("Attributes.Target", "管理员设置的属性满点最终值；留空时使用宠物配置中的 Per_Aspect。\n目标值按品质配置的全部关联属性点计算，玩家仍需手动分配属性点。\n路径格式：Attributes.Target.<宠物ID>.<属性ID>。");
+        config.setComments("Attributes.Target",
+            "管理员设置的属性满点最终值；留空时使用宠物配置中的 Per_Aspect。",
+            "目标值按品质配置的全部关联属性点计算，玩家仍需手动分配属性点。",
+            "路径格式：Attributes.Target.<宠物ID>.<属性ID>。");
         config.set("Name", this.getName());
         config.setItem("Icon", this.getIcon());
         config.set("Name_Format", this.getNameFormat());

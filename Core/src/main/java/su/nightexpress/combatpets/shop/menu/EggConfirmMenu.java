@@ -111,6 +111,7 @@ public class EggConfirmMenu extends ConfigMenu<PetsPlugin> implements Linked<Egg
 
         this.getItems().forEach(menuItem -> menuItem.getOptions().addDisplayModifier((viewer, itemStack) -> {
             BuyInfo buyInfo = this.getLink(viewer);
+            if (buyInfo == null) return;
             EggPrice price = this.shopManager.getEggPrice(buyInfo.tier, buyInfo.template);
 
             ItemReplacer.create(itemStack).readMeta()
@@ -128,9 +129,31 @@ public class EggConfirmMenu extends ConfigMenu<PetsPlugin> implements Linked<Egg
     }
 
     @Override
+    public boolean canOpen(@NotNull Player player) {
+        return super.canOpen(player) && this.getLink(player) != null;
+    }
+
+    @Override
+    public void flush(@NotNull MenuViewer viewer) {
+        // NightCore may deliver a refresh queued before this session was closed.
+        if (this.getViewer(viewer.getPlayer()) != viewer) return;
+        this.flush(viewer.getPlayer());
+    }
+
+    @Override
+    public void flush(@NotNull Player player) {
+        MenuViewer viewer = this.getViewer(player);
+        if (getMenu(player) != this || viewer == null || !viewer.hasInventory()) return;
+        if (player.getOpenInventory().getTopInventory() != viewer.getInventory()) return;
+        if (this.getLink(player) == null) return;
+        super.flush(player);
+    }
+
+    @Override
     public void onPrepare(@NotNull MenuViewer viewer, @NotNull MenuOptions options) {
         Player player = viewer.getPlayer();
         BuyInfo buyInfo = this.getLink(player);
+        if (buyInfo == null) return;
         Template template = buyInfo.template;
         Tier tier = buyInfo.tier;
 

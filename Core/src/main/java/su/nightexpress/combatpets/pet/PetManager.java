@@ -29,6 +29,7 @@ import su.nightexpress.combatpets.config.Config;
 import su.nightexpress.combatpets.config.ChineseConfigMigration;
 import su.nightexpress.combatpets.config.Keys;
 import su.nightexpress.combatpets.config.Lang;
+import su.nightexpress.combatpets.config.MysteryEggTierWeights;
 import su.nightexpress.combatpets.config.Perms;
 import su.nightexpress.combatpets.config.PetNameFilter;
 import su.nightexpress.combatpets.data.impl.PetData;
@@ -41,6 +42,7 @@ import su.nightexpress.combatpets.pet.listener.LevelledMobsListener;
 import su.nightexpress.combatpets.pet.listener.PetGenericListener;
 import su.nightexpress.combatpets.pet.listener.PluginLifecycleListener;
 import su.nightexpress.combatpets.pet.listener.PlayerGenericListener;
+import su.nightexpress.combatpets.pet.listener.PetInventoryListener;
 import su.nightexpress.combatpets.pet.menu.*;
 import su.nightexpress.combatpets.util.PetCreator;
 import su.nightexpress.combatpets.util.PetScheduler;
@@ -65,8 +67,9 @@ import su.nightexpress.nightcore.util.text.NightMessage;
 import java.io.File;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -119,6 +122,7 @@ public class PetManager extends AbstractManager<PetsPlugin> {
         this.addListener(new PetGenericListener(this.plugin, this));
         this.addListener(new CombatListener(this.plugin, this));
         this.addListener(new PlayerGenericListener(this.plugin, this));
+        this.addListener(new PetInventoryListener(this.plugin, this));
         this.lifecycleListener = new PluginLifecycleListener(this.plugin, this);
         this.addListener(this.lifecycleListener);
         if (Plugins.isInstalled(HookId.LEVELLED_MOBS)) {
@@ -187,122 +191,107 @@ public class PetManager extends AbstractManager<PetsPlugin> {
 
     public boolean prepareLifecycleShutdown(@NotNull Runnable ready) {
         if (!this.shuttingDown.compareAndSet(false, true)) return false;
-
-        AtomicInteger pending = new AtomicInteger(1);
-        if (this.plugin.getCaptureManager() != null) {
-            pending.incrementAndGet();
-            this.plugin.getCaptureManager().prepareShutdown(pending::decrementAndGet);
+        List<ActivePet> pets = collectLifecyclePets(getActivePets(), this.retiredPetCleanup);
+        List<CompletableFuture<Void>> windows = new ArrayList<>();
+        try {
+            if (this.plugin.getCaptureManager() != null) {
+                CompletableFuture<Void> captures = new CompletableFuture<>();
+                windows.add(captures);
+                this.plugin.getCaptureManager().prepareShutdown(() -> captures.complete(null));
+            }
+            for (Player player : List.copyOf(this.plugin.getServer().getOnlinePlayers())) {
+                windows.add(this.schedulePlayerCleanup(player));
+            }
+        }
+        catch (RuntimeException exception) {
+            windows.add(CompletableFuture.failedFuture(exception));
         }
 
-        List<ActivePet> pets = collectLifecyclePets(getActivePets(), this.retiredPetCleanup);
-        pets.forEach(holder -> {
-            this.schedulePetShutdown(holder, pending);
-            this.scheduleOwnerCleanup(holder, pending);
-        });
-
-        List<Player> players = List.copyOf(this.plugin.getServer().getOnlinePlayers());
-        players.forEach(player -> this.schedulePlayerCleanup(player, pending));
-
-        this.plugin.getServer().getGlobalRegionScheduler().runAtFixedRate(this.plugin, task -> {
-            if (!this.plugin.isEnabled()) {
-                task.cancel();
-                return;
+        // Finish player-owned inventory clicks/close events before pet-owned snapshots and clear.
+        CompletableFuture.allOf(windows.toArray(CompletableFuture[]::new)).thenCompose(ignored -> {
+            List<CompletableFuture<Void>> removals = new ArrayList<>();
+            for (ActivePet holder : pets) {
+                removals.add(this.scheduleCleanup(holder.getEntity(), holder::removeForShutdown,
+                    () -> PetEntityBridge.removeRetiredHolder(holder)));
+                removals.add(this.scheduleCleanup(holder.getOwner(), holder::removeHealthBar, () -> {}));
             }
-            if (pending.get() != 0) return;
-
-            task.cancel();
-            this.savePetDataAndContinue(ready);
-        }, 1L, 1L);
-
-        pending.decrementAndGet();
+            return CompletableFuture.allOf(removals.toArray(CompletableFuture[]::new));
+        }).thenCompose(ignored -> this.savePetDataForShutdown())
+            .orTimeout(30, TimeUnit.SECONDS).whenComplete((ignored, failure) -> {
+                if (failure != null) {
+                    this.plugin.getLogger().log(Level.SEVERE,
+                        "安全卸载已中止：清理或数据库保存失败/超时。插件保持停止接单；请排除故障后完整重启，勿强制卸载。", failure);
+                    return;
+                }
+                try {
+                    this.plugin.getServer().getGlobalRegionScheduler().run(this.plugin, task -> {
+                        if (this.plugin.isEnabled()) ready.run();
+                    });
+                }
+                catch (RuntimeException exception) {
+                    this.plugin.getLogger().log(Level.SEVERE, "安全卸载完成，但无法继续原卸载命令。", exception);
+                }
+            });
         return true;
     }
 
-    private void savePetDataAndContinue(@NotNull Runnable ready) {
-        Set<PetUser> users = this.plugin.getUserManager().getLoaded();
-        this.plugin.getServer().getAsyncScheduler().runNow(this.plugin, task -> {
-            try {
-                this.plugin.getDataHandler().saveUsersFully(users);
-            }
-            catch (RuntimeException exception) {
-                this.plugin.getLogger().log(Level.SEVERE, "卸载前完整保存宠物数据失败。", exception);
-            }
-            finally {
-                this.plugin.getServer().getGlobalRegionScheduler().run(this.plugin, scheduledTask -> {
-                    if (this.plugin.isEnabled()) ready.run();
-                });
-            }
-        });
-    }
-
-    private void schedulePetShutdown(@NotNull ActivePet holder, @NotNull AtomicInteger pending) {
-        pending.incrementAndGet();
-        Runnable finish = once(pending::decrementAndGet);
-
+    private CompletableFuture<Void> savePetDataForShutdown() {
+        List<PetUser> users = List.copyOf(this.plugin.getUserManager().getLoaded());
+        CompletableFuture<Void> saved = new CompletableFuture<>();
         try {
-            boolean scheduled = PetScheduler.runAtEntity(this.plugin, holder.getEntity(), () -> {
+            this.plugin.getServer().getAsyncScheduler().runNow(this.plugin, task -> {
                 try {
-                    holder.removeForShutdown();
+                    this.plugin.getDataHandler().saveUsersForShutdown(users);
+                    saved.complete(null);
                 }
-                finally {
-                    finish.run();
+                catch (Exception exception) {
+                    saved.completeExceptionally(exception);
                 }
-            }, () -> {
-                PetEntityBridge.removeRetiredHolder(holder);
-                finish.run();
             });
-            if (!scheduled) finish.run();
         }
         catch (RuntimeException exception) {
-            finish.run();
-            throw exception;
+            saved.completeExceptionally(exception);
         }
+        return saved;
     }
 
-    private void scheduleOwnerCleanup(@NotNull ActivePet holder, @NotNull AtomicInteger pending) {
-        pending.incrementAndGet();
-        Runnable finish = once(pending::decrementAndGet);
-
+    private CompletableFuture<Void> scheduleCleanup(Entity entity, Runnable cleanup, Runnable retired) {
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        Runnable retirement = () -> {
+            try { retired.run(); completion.complete(null); }
+            catch (RuntimeException exception) { completion.completeExceptionally(exception); }
+        };
         try {
-            boolean scheduled = PetScheduler.runAtEntity(this.plugin, holder.getOwner(), () -> {
+            boolean scheduled = PetScheduler.runAtEntity(this.plugin, entity, () -> {
                 try {
-                    holder.removeHealthBar();
+                    cleanup.run();
+                    completion.complete(null);
                 }
-                finally {
-                    finish.run();
+                catch (RuntimeException exception) {
+                    completion.completeExceptionally(exception);
                 }
-            }, finish);
-            if (!scheduled) finish.run();
+            }, retirement);
+            if (!scheduled) retirement.run();
         }
         catch (RuntimeException exception) {
-            finish.run();
-            throw exception;
+            completion.completeExceptionally(exception);
         }
+        return completion;
     }
 
-    private void schedulePlayerCleanup(@NotNull Player player, @NotNull AtomicInteger pending) {
-        pending.incrementAndGet();
-        Runnable finish = once(pending::decrementAndGet);
-
-        try {
-            boolean scheduled = PetScheduler.runAtEntity(this.plugin, player, () -> {
-                try {
-                    Menu menu = AbstractMenu.getMenu(player);
-                    if (this.ownsMenu(menu)) {
-                        player.getOpenInventory().getTopInventory().clear();
-                        menu.close(player);
-                    }
+    private CompletableFuture<Void> schedulePlayerCleanup(@NotNull Player player) {
+        return this.scheduleCleanup(player, () -> {
+            if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof ActivePet) {
+                player.closeInventory(); // Real stored items must not be cleared as GUI decorations.
+            }
+            else {
+                Menu menu = AbstractMenu.getMenu(player);
+                if (this.ownsMenu(menu)) {
+                    player.getOpenInventory().getTopInventory().clear();
+                    menu.close(player);
                 }
-                finally {
-                    finish.run();
-                }
-            }, finish);
-            if (!scheduled) finish.run();
-        }
-        catch (RuntimeException exception) {
-            finish.run();
-            throw exception;
-        }
+            }
+        }, () -> {});
     }
 
     private boolean ownsMenu(@Nullable Menu menu) {
@@ -315,14 +304,6 @@ public class PetManager extends AbstractManager<PetsPlugin> {
             return true;
         }
         return this.plugin.getShopManager() != null && this.plugin.getShopManager().ownsMenu(menu);
-    }
-
-    @NotNull
-    private static Runnable once(@NotNull Runnable action) {
-        AtomicBoolean completed = new AtomicBoolean();
-        return () -> {
-            if (completed.compareAndSet(false, true)) action.run();
-        };
     }
 
     public boolean isShuttingDown() {
@@ -475,7 +456,7 @@ public class PetManager extends AbstractManager<PetsPlugin> {
 
         getActivePets().forEach(holder -> {
             boolean scheduled = PetScheduler.runAtEntity(this.plugin, holder.getEntity(), () -> {
-                if (this.plugin.isEnabled()) {
+                if (this.plugin.isEnabled() && !this.isShuttingDown()) {
                     action.accept(holder);
                 }
             }, () -> this.handleRetiredPet(holder));
@@ -559,6 +540,16 @@ public class PetManager extends AbstractManager<PetsPlugin> {
         return Rnd.getByWeight(map);
     }
 
+    @Nullable
+    public Tier getMysteryEggTierByWeight() {
+        Map<Tier, Double> weights = new HashMap<>();
+        Config.MYSTERY_EGG_TIER_CHANCES.get().forEach((tierId, weight) -> {
+            Tier tier = this.getTier(tierId);
+            if (tier != null && MysteryEggTierWeights.isUsable(weight)) weights.put(tier, weight);
+        });
+        return weights.isEmpty() ? null : Rnd.getByWeight(weights);
+    }
+
     @NotNull
     public Map<String, Template> getTemplateMap() {
         return this.templateMap;
@@ -567,6 +558,14 @@ public class PetManager extends AbstractManager<PetsPlugin> {
     @NotNull
     public Set<Template> getTemplates() {
         return new HashSet<>(this.templateMap.values());
+    }
+
+    @NotNull
+    public Set<Template> getMysteryEggTemplates() {
+        Set<Template> templates = this.getTemplates();
+        var shopManager = this.plugin.getShopManager();
+        if (shopManager != null) templates.removeIf(shopManager::isEggPetDisabled);
+        return templates;
     }
 
     @NotNull

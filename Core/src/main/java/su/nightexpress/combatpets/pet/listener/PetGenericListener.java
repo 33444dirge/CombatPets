@@ -185,7 +185,13 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
     private boolean containsPet(@NotNull Entity entity) {
         if (entity instanceof LivingEntity livingEntity && this.petManager.isPetEntity(livingEntity)) return true;
 
-        return entity.getPassengers().stream().anyMatch(this::containsPet);
+        // CraftEntity#getPassengers copies the list, even when it is empty.
+        if (entity.isEmpty()) return false;
+
+        for (Entity passenger : entity.getPassengers()) {
+            if (this.containsPet(passenger)) return true;
+        }
+        return false;
     }
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)

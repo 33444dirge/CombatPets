@@ -82,15 +82,25 @@ public final class ChineseConfigMigration {
             config.addMissing("Shop.Admin.Price.Updated", "<gray>已将 <soft_yellow>%pet_tier_name% %pet_config_default_name%</soft_yellow> 的售价设置为 <soft_green>%price%</soft_green>。</gray>");
             config.addMissing("Shop.Admin.Price.Error.Currency", "<soft_red>该价格使用的货币不可用，价格未修改。</soft_red>");
             config.addMissing("Shop.Admin.Price.Error.Invalid", "<soft_red>请输入不小于 0 的有效数字；输入 0 可恢复品质默认价格。</soft_red>");
-            config.addMissing("Pet.Admin.Attribute.Target.Prompt", List.of(
+            String attributeTargetPromptPath = "Pet.Admin.Attribute.Target.Prompt";
+            List<String> oldAttributeTargetPrompt = List.of(
                 "[title_times=\"20:60:20\",sound=\"minecraft:block.lava.pop;0.8;1.0\",type=\"title\"]",
                 "<soft_yellow><b>修改属性满点值</b></soft_yellow>",
                 "<gray>请输入 <soft_yellow>%name%</soft_yellow> 在全部属性点分配后的最终值。</gray>",
                 "<gray>输入 <soft_yellow>reset</soft_yellow> 恢复宠物原有的 Per_Aspect 计算。</gray>"
-            ));
+            );
+            List<String> attributeTargetPrompt = new ArrayList<>(oldAttributeTargetPrompt);
+            attributeTargetPrompt.add("<gray>输入 <soft_yellow>取消</soft_yellow> 放弃本次修改。</gray>");
+            if (config.getStringList(attributeTargetPromptPath).equals(oldAttributeTargetPrompt)) {
+                config.set(attributeTargetPromptPath, attributeTargetPrompt);
+            }
+            config.addMissing(attributeTargetPromptPath, attributeTargetPrompt);
             config.addMissing("Pet.Admin.Attribute.Target.Updated", "<gray>属性满点最终值已设置为 <soft_green>%value%</soft_green>。</gray>");
             config.addMissing("Pet.Admin.Attribute.Target.Reset", "<gray>属性目标值已重置，恢复使用宠物配置中的 Per_Aspect。</gray>");
-            config.addMissing("Pet.Admin.Attribute.Target.Invalid", "<soft_red>请输入不小于 0 的有效数字，或输入 reset。</soft_red>");
+            replaceExact(config, "Pet.Admin.Attribute.Target.Invalid",
+                "<soft_red>请输入不小于 0 的有效数字，或输入 reset。</soft_red>",
+                "<soft_red>请输入不小于 0 的有效数字，或输入 reset；输入取消可放弃修改。</soft_red>");
+            config.addMissing("Pet.Admin.Attribute.Target.Invalid", "<soft_red>请输入不小于 0 的有效数字，或输入 reset；输入取消可放弃修改。</soft_red>");
             config.addMissing("Pet.Admin.Attribute.Target.Error", "<soft_red>该属性没有关联任何可用的品质属性点。</soft_red>");
             replaceExact(config, "Pet.Catch.Error.Conditions",
                 "<gray><soft_red>%name%</soft_red> 尚未达到捕捉条件。</gray>",

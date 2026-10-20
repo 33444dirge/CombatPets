@@ -65,7 +65,12 @@ public class PetMenu extends ConfigMenu<PetsPlugin> {
             ActivePet petHolder = PetEntityBridge.getByPlayer(viewer.getPlayer());
             if (petHolder == null) return;
 
-            this.runNextTick(() -> viewer.getPlayer().openInventory(petHolder.getInventory()));
+            PetScheduler.runAtEntity(plugin, viewer.getPlayer(), () -> {
+                if (!this.plugin.getPetManager().isShuttingDown()
+                    && PetEntityBridge.getByPlayer(viewer.getPlayer()) == petHolder) {
+                    viewer.getPlayer().openInventory(petHolder.getInventory());
+                }
+            });
         }));
 
 

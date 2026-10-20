@@ -69,6 +69,8 @@ public class Config {
         "神秘宠物蛋的物品格式。"
     );
 
+    public static final ConfigValue<Map<String, Double>> MYSTERY_EGG_TIER_CHANCES = MysteryEggTierWeights.configValue();
+
 
 
     public static final ConfigValue<ItemStack> PET_EGG_ITEM = ConfigValue.create("Pets.Egg_Item",

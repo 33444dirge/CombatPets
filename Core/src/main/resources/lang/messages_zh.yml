@@ -187,9 +187,10 @@ Pet:
         - <soft_yellow><b>修改属性满点值</b></soft_yellow>
         - <gray>请输入 <soft_yellow>%name%</soft_yellow> 在全部属性点分配后的最终值。</gray>
         - <gray>输入 <soft_yellow>reset</soft_yellow> 恢复宠物原有的 Per_Aspect 计算。</gray>
+        - <gray>输入 <soft_yellow>取消</soft_yellow> 放弃本次修改。</gray>
         Updated: <gray>属性满点最终值已设置为 <soft_green>%value%</soft_green>。</gray>
         Reset: <gray>属性目标值已重置，恢复使用宠物配置中的 Per_Aspect。</gray>
-        Invalid: <soft_red>请输入不小于 0 的有效数字，或输入 reset。</soft_red>
+        Invalid: <soft_red>请输入不小于 0 的有效数字，或输入 reset；输入取消可放弃修改。</soft_red>
         Error: <soft_red>该属性没有关联任何可用的品质属性点。</soft_red>
   Despawn:
     Death:

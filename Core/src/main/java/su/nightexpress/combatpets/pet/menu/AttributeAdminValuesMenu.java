@@ -149,6 +149,8 @@ public class AttributeAdminValuesMenu extends ConfigMenu<PetsPlugin> implements 
 
         Dialog.create(player, (dialog, input) -> {
             String raw = input.getTextRaw().trim();
+            if (raw.equals("取消")) return true;
+
             if (raw.equalsIgnoreCase("reset") || raw.equals("重置") || raw.equals("恢复")) {
                 PetScheduler.runAtEntity(this.plugin, player, () -> {
                     tier.resetAttributeTarget(context.template(), attribute);
@@ -202,6 +204,7 @@ public class AttributeAdminValuesMenu extends ConfigMenu<PetsPlugin> implements 
             meta.setLore(Lists.newList(
                 LIGHT_GRAY.enclose("点击属性后输入满点时的最终值。"),
                 LIGHT_GRAY.enclose("输入 reset 可恢复旧版 Per_Aspect 计算。"),
+                LIGHT_GRAY.enclose("输入取消可放弃本次修改。"),
                 LIGHT_GRAY.enclose("仅管理员设置目标值，玩家仍手动分配属性点。")
             ));
         });

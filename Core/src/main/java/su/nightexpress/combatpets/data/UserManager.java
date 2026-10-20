@@ -9,6 +9,8 @@ import su.nightexpress.nightcore.db.AbstractUserManager;
 import su.nightexpress.nightcore.util.Players;
 
 import java.util.UUID;
+import java.sql.SQLException;
+import java.util.logging.Level;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class UserManager extends AbstractUserManager<PetsPlugin, PetUser> {
@@ -71,5 +73,29 @@ public class UserManager extends AbstractUserManager<PetsPlugin, PetUser> {
     protected void onShutdown() {
         this.active.set(false);
         super.onShutdown();
+    }
+
+    @Override
+    public void saveLoaded() {
+        // NightCore's default only saves common fields, not the pets column.
+        try {
+            this.plugin.getDataHandler().saveUsersForShutdown(this.getLoaded());
+        }
+        catch (SQLException exception) {
+            this.plugin.getLogger().log(Level.SEVERE, "停服时完整保存宠物数据失败；数据库仍不可用，不能保证本次数据已落盘。", exception);
+        }
+    }
+
+    @Override
+    public void saveScheduled() {
+        if (this.plugin.getPetManager() != null && this.plugin.getPetManager().isShuttingDown()) return;
+        super.saveScheduled();
+    }
+
+    @Override
+    public void unloadExpired() {
+        // Keep failed final-save data resident until the operator repairs MySQL and stops safely.
+        if (this.plugin.getPetManager() != null && this.plugin.getPetManager().isShuttingDown()) return;
+        super.unloadExpired();
     }
 }

@@ -222,7 +222,7 @@ public class Lang implements LangContainer {
 
     public static final MessageLocale PET_ATTRIBUTE_ADMIN_TARGET_PROMPT = LangEntry.builder("Pet.Admin.Attribute.Target.Prompt").titleMessage(
         SOFT_YELLOW.wrap(BOLD.wrap("Editing Pet Attribute")),
-        GRAY.wrap("Enter the final value for " + SOFT_YELLOW.wrap(GENERIC_NAME) + "; type " + SOFT_YELLOW.wrap("reset") + " to use legacy Per_Aspect."),
+        GRAY.wrap("Enter the final value for " + SOFT_YELLOW.wrap(GENERIC_NAME) + "; type " + SOFT_YELLOW.wrap("reset") + " to use legacy Per_Aspect, or " + SOFT_YELLOW.wrap("取消") + " to cancel."),
         Sound.BLOCK_LAVA_POP
     );
 
@@ -235,7 +235,7 @@ public class Lang implements LangContainer {
     );
 
     public static final MessageLocale PET_ATTRIBUTE_ADMIN_TARGET_INVALID = LangEntry.builder("Pet.Admin.Attribute.Target.Invalid").chatMessage(
-        SOFT_RED.wrap("Please enter a finite non-negative number, or reset.")
+        SOFT_RED.wrap("Please enter a finite non-negative number, reset, or 取消 to cancel.")
     );
 
     public static final MessageLocale PET_ATTRIBUTE_ADMIN_TARGET_ERROR = LangEntry.builder("Pet.Admin.Attribute.Target.Error").chatMessage(
