@@ -28,6 +28,7 @@ import su.nightexpress.combatpets.config.Config;
 import su.nightexpress.combatpets.config.Keys;
 import su.nightexpress.combatpets.config.Lang;
 import su.nightexpress.combatpets.data.impl.PetData;
+import su.nightexpress.combatpets.data.impl.PetUser;
 import su.nightexpress.combatpets.level.LevelingConfig;
 import su.nightexpress.combatpets.pet.AttributeRegistry;
 import su.nightexpress.combatpets.util.PetScheduler;
@@ -67,6 +68,7 @@ public final class PetInstance implements ActivePet {
     private final AtomicBoolean moveToOwnerPending;
     private final AtomicInteger waterRestrictedFarLandSeconds;
     private final Set<Player> inventoryViewers = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean inventorySavePending = new AtomicBoolean();
 
     private boolean equipmentUnlocked;
     private long    nextRegenTime;
@@ -143,6 +145,43 @@ public final class PetInstance implements ActivePet {
 
     public void forgetInventoryViewer(Player player) {
         this.inventoryViewers.remove(player);
+    }
+
+    /** Inventory events precede vanilla's transfer. Observe the completed transaction next tick. */
+    public void queueInventorySave(Player viewer) {
+        if (!this.isOwner(viewer) || this.removed.get() || !this.inventorySavePending.compareAndSet(false, true)) return;
+        Runnable reset = () -> this.inventorySavePending.set(false);
+        try {
+            if (!PetScheduler.runAtEntity(this.plugin, viewer, () -> {
+                reset.run();
+                this.saveInventoryContents();
+            }, reset)) reset.run();
+        }
+        catch (IllegalPluginAccessException exception) {
+            reset.run();
+        }
+    }
+
+    /** Snapshot only the virtual storage; never query a retired pet entity. */
+    public void saveInventoryContents() {
+        if (this.removed.get() || !this.getTemplate().canHaveInventory() || !this.getTier().hasInventory()) return;
+        PetUser user = this.plugin.getUserManager().getLoaded(this.owner.getUniqueId());
+        if (user == null) return;
+        synchronized (user) {
+            ActivePet current = PetEntityBridge.getByPlayer(this.owner);
+            if (this.removed.get() || (current != null && current != this)
+                || user.getPet(this.getTemplate(), this.getTier()) != this.data) return;
+            this.data.setInventory(this.copyInventoryContents());
+            this.plugin.getUserManager().save(user);
+        }
+    }
+
+    private ItemStack[] copyInventoryContents() {
+        ItemStack[] contents = this.inventory.getContents();
+        for (int i = 0; i < contents.length; i++) {
+            if (contents[i] != null) contents[i] = contents[i].clone();
+        }
+        return contents;
     }
 
     private void closeViews() {
@@ -281,6 +320,7 @@ public final class PetInstance implements ActivePet {
 
             if (this.doFeed(foodItem)) {
                 item.setAmount(item.getAmount() - 1);
+                this.saveInventoryContents();
                 break;
             }
         }
@@ -426,7 +466,7 @@ public final class PetInstance implements ActivePet {
 
             // Update inventory content to pet data.
             if (this.getTemplate().canHaveInventory() && this.getTier().hasInventory()) {
-                this.data.setInventory(this.getInventory().getContents());
+                this.data.setInventory(this.copyInventoryContents());
             }
 
             // Update equipment to pet data.

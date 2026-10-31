@@ -24,6 +24,9 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Collection;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.logging.Level;
 import java.util.function.Function;
 
 public class DataHandler extends AbstractUserDataManager<PetsPlugin, PetUser> {
@@ -99,7 +102,13 @@ public class DataHandler extends AbstractUserDataManager<PetsPlugin, PetUser> {
     /** Keeps the final lifecycle flush ordered after any in-flight autosave. */
     @Override
     public synchronized void saveUsersFully(@NotNull Collection<PetUser> users) {
-        super.saveUsersFully(users);
+        try {
+            this.saveUsersForShutdown(users);
+        }
+        catch (SQLException exception) {
+            // NightCore will still clear its flag; PetUser retains the unconfirmed version for retry.
+            this.plugin.getLogger().log(Level.SEVERE, "完整保存宠物数据失败，未确认的保存请求将保留并重试。", exception);
+        }
     }
 
     /** Final unload flush: use the existing schema/bindings, but never swallow JDBC failures. */
@@ -107,12 +116,14 @@ public class DataHandler extends AbstractUserDataManager<PetsPlugin, PetUser> {
         if (users.isEmpty()) return;
         UpdateQuery<PetUser> query = UserQueries.updateCommons();
         this.addUpsertQueryData(query);
+        Map<PetUser, Long> versions = new LinkedHashMap<>();
+        users.forEach(user -> versions.put(user, user.getSaveVersion()));
         try (Connection connection = this.getConnection()) {
             connection.setAutoCommit(false);
             try (PreparedStatement statement = connection.prepareStatement(query.createSQL(this.tableUsers))) {
                 statement.setQueryTimeout(15);
                 int batchSize = 0;
-                for (PetUser user : users) {
+                for (PetUser user : versions.keySet()) {
                     query.onExecute(statement, user);
                     statement.addBatch();
                     if (++batchSize == 500) {
@@ -123,6 +134,7 @@ public class DataHandler extends AbstractUserDataManager<PetsPlugin, PetUser> {
                 }
                 if (batchSize != 0) checkSaveBatch(statement.executeBatch());
                 connection.commit();
+                versions.forEach(PetUser::acknowledgeSave);
             }
             catch (SQLException | RuntimeException exception) {
                 try { connection.rollback(); }

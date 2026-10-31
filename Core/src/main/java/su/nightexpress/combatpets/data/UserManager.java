@@ -76,6 +76,14 @@ public class UserManager extends AbstractUserManager<PetsPlugin, PetUser> {
     }
 
     @Override
+    public void save(@NotNull PetUser user) {
+        synchronized (user) {
+            super.save(user);
+            user.markSaveRequested();
+        }
+    }
+
+    @Override
     public void saveLoaded() {
         // NightCore's default only saves common fields, not the pets column.
         try {

@@ -6,6 +6,7 @@ import su.nightexpress.combatpets.api.pet.Template;
 import su.nightexpress.combatpets.api.pet.Tier;
 import su.nightexpress.combatpets.util.PetUtils;
 import su.nightexpress.nightcore.db.AbstractUser;
+import su.nightexpress.nightcore.util.TimeUtil;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -15,6 +16,46 @@ public class PetUser extends AbstractUser {
     private final Map<String, PetData> petMap;
 
     private boolean loaded;
+    private long requestedSaveVersion;
+    private long persistedSaveVersion;
+    private long requestedSaveTime = -1;
+
+    /** Independent of NightCore's unconditional disableAutoSave completion callback. */
+    public synchronized void markSaveRequested() {
+        this.requestedSaveTime = this.getAutoSaveTime();
+        this.requestedSaveVersion++;
+    }
+
+    public synchronized long getSaveVersion() {
+        return this.requestedSaveVersion;
+    }
+
+    /** Only a confirmed JDBC commit may acknowledge the version it actually wrote. */
+    public synchronized void acknowledgeSave(long version) {
+        this.persistedSaveVersion = Math.max(this.persistedSaveVersion, version);
+    }
+
+    @Override
+    public synchronized void disableAutoSave() {
+        // Serialize NightCore's completion with UserManager.save's deadline + version publication.
+        super.disableAutoSave();
+    }
+
+    @Override
+    public synchronized boolean isAutoSavePlanned() {
+        return this.requestedSaveVersion > this.persistedSaveVersion || super.isAutoSavePlanned();
+    }
+
+    @Override
+    public synchronized boolean isAutoSaveReady() {
+        return this.requestedSaveVersion > this.persistedSaveVersion
+            ? TimeUtil.isPassed(this.requestedSaveTime) : super.isAutoSaveReady();
+    }
+
+    @Override
+    public synchronized boolean isCacheExpired() {
+        return !this.isAutoSavePlanned() && super.isCacheExpired();
+    }
 
     @NotNull
     public static PetUser create(@NotNull UUID uuid, @NotNull String name) {

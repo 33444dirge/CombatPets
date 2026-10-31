@@ -41,6 +41,7 @@ public final class PetInventoryListener extends AbstractListener<PetsPlugin> {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onClose(InventoryCloseEvent event) {
         if (event.getInventory().getHolder(false) instanceof PetInstance pet && event.getPlayer() instanceof Player player) {
+            if (pet.isOwner(player)) pet.saveInventoryContents();
             pet.forgetInventoryViewer(player);
         }
     }
@@ -54,5 +55,17 @@ public final class PetInventoryListener extends AbstractListener<PetsPlugin> {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onDrag(InventoryDragEvent event) {
         if (this.unavailable(event.getView().getTopInventory())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void saveAfterClick(InventoryClickEvent event) {
+        if (event.getView().getTopInventory().getHolder(false) instanceof PetInstance pet
+            && event.getWhoClicked() instanceof Player player) pet.queueInventorySave(player);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void saveAfterDrag(InventoryDragEvent event) {
+        if (event.getView().getTopInventory().getHolder(false) instanceof PetInstance pet
+            && event.getWhoClicked() instanceof Player player) pet.queueInventorySave(player);
     }
 }
