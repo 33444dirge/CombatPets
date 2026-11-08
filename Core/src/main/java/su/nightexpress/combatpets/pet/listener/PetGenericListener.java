@@ -2,6 +2,7 @@ package su.nightexpress.combatpets.pet.listener;
 
 import com.destroystokyo.paper.event.entity.WitchConsumePotionEvent;
 import org.bukkit.Material;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
@@ -11,6 +12,7 @@ import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.entity.*;
 import org.bukkit.event.player.PlayerShearEntityEvent;
+import org.bukkit.event.world.EntitiesLoadEvent;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
@@ -21,6 +23,7 @@ import su.nightexpress.combatpets.config.Config;
 import su.nightexpress.combatpets.data.impl.PetUser;
 import su.nightexpress.combatpets.pet.PetManager;
 import su.nightexpress.combatpets.util.PetUtils;
+import su.nightexpress.combatpets.util.PetScheduler;
 import su.nightexpress.nightcore.manager.AbstractListener;
 import su.nightexpress.nightcore.util.ItemUtil;
 import su.nightexpress.nightcore.util.random.Rnd;
@@ -35,6 +38,20 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
     public PetGenericListener(@NotNull PetsPlugin plugin, @NotNull PetManager petManager) {
         super(plugin);
         this.petManager = petManager;
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onOrphanPetSpawn(CreatureSpawnEvent event) {
+        if (this.petManager.isOrphanPet(event.getEntity())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPetEntitiesLoad(EntitiesLoadEvent event) {
+        for (Entity entity : event.getEntities()) {
+            if (!(entity instanceof LivingEntity living)) continue;
+            if (Bukkit.isOwnedByCurrentRegion(living)) this.petManager.removeOrphanPet(living);
+            else PetScheduler.runAtEntity(this.plugin, living, () -> this.petManager.removeOrphanPet(living));
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

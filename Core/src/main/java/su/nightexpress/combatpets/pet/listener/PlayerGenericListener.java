@@ -62,6 +62,11 @@ public class PlayerGenericListener extends AbstractListener<PetsPlugin> {
         if (event.getHand() != EquipmentSlot.HAND) return;
         if (!(event.getRightClicked() instanceof LivingEntity entity)) return;
 
+        if (this.petManager.removeOrphanPet(entity)) {
+            event.setCancelled(true);
+            return;
+        }
+
         Player player = event.getPlayer();
         ActivePet activePet = this.petManager.getPetByMob(entity);
         boolean chorusFruitFood = activePet != null
@@ -132,7 +137,14 @@ public class PlayerGenericListener extends AbstractListener<PetsPlugin> {
 
     @EventHandler(priority = EventPriority.NORMAL)
     public void onPlayerQuit(PlayerQuitEvent event) {
-        this.petManager.despawnPet(event.getPlayer());
+        this.petManager.handlePlayerQuit(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onOrphanPetInteract(PlayerInteractEntityEvent event) {
+        if (event.getRightClicked() instanceof LivingEntity entity && this.petManager.removeOrphanPet(entity)) {
+            event.setCancelled(true);
+        }
     }
 }
 

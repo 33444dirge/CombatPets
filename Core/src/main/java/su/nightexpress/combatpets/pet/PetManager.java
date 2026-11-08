@@ -1,6 +1,7 @@
 package su.nightexpress.combatpets.pet;
 
 import org.bukkit.Location;
+import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
@@ -646,6 +647,20 @@ public class PetManager extends AbstractManager<PetsPlugin> {
         return PetEntityBridge.isPet(entity) || PDCUtil.getBoolean(entity, Keys.petEntity).orElse(false);
     }
 
+    /** A vanilla reload may retain the marker, but cannot recreate the managed pet instance. */
+    public boolean isOrphanPet(@NotNull LivingEntity entity) {
+        ActivePet active = this.getPetByMob(entity);
+        return (active == null || active.getEntity() != entity)
+            && PDCUtil.getBoolean(entity, Keys.petEntity).orElse(false);
+    }
+
+    public boolean removeOrphanPet(@NotNull LivingEntity entity) {
+        if (!Bukkit.isOwnedByCurrentRegion(entity) || !this.isOrphanPet(entity)) return false;
+        // No death/drop path: the legitimate equipment remains in PetData.
+        entity.remove();
+        return true;
+    }
+
     public boolean hasActivePet(@NotNull Player player) {
         return this.getPlayerPet(player) != null;
     }
@@ -799,6 +814,38 @@ public class PetManager extends AbstractManager<PetsPlugin> {
         holder.handleDeath();
 
         this.plugin.getUserManager().save(user);
+    }
+
+    /** Quit must finish local cleanup before PlayerList saves/unloads the player's root vehicle. */
+    public void handlePlayerQuit(@NotNull Player player) {
+        for (Entity vehicle = player.getVehicle(); vehicle != null && Bukkit.isOwnedByCurrentRegion(vehicle); vehicle = vehicle.getVehicle()) {
+            if (vehicle instanceof LivingEntity living && this.isPetEntity(living)) {
+                // This includes a guest riding another player's pet; leave that owner's pet active.
+                player.leaveVehicle();
+                break;
+            }
+        }
+
+        ActivePet holder = this.getPlayerPet(player);
+        if (holder == null) return;
+        Runnable saveOwner = () -> {
+            PetUser user = this.plugin.getUserManager().getLoaded(player.getUniqueId());
+            if (user != null) this.plugin.getUserManager().save(user);
+        };
+        Runnable remove = () -> {
+            this.removePet(holder);
+            saveOwner.run();
+        };
+        if (Bukkit.isOwnedByCurrentRegion(holder.getEntity())) {
+            remove.run();
+        }
+        else {
+            Runnable retired = () -> {
+                this.handleRetiredPet(holder);
+                saveOwner.run();
+            };
+            if (!PetScheduler.runAtEntity(this.plugin, holder.getEntity(), remove, retired)) retired.run();
+        }
     }
 
     public void despawnPet(@NotNull Player player) {

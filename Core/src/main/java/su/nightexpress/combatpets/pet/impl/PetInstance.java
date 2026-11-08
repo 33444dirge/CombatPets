@@ -404,7 +404,8 @@ public final class PetInstance implements ActivePet {
 
         this.entity.setHealth(Math.min(this.data.getHealth(), this.getMaxHealth()));
         this.entity.setSilent(this.data.isSilent());
-        this.entity.setPersistent(true);
+        // PetData is the durable owner. Vanilla saves cannot restore our custom pet class/bridge.
+        this.entity.setPersistent(false);
         this.entity.setRemoveWhenFarAway(false);
         this.entity.setCanPickupItems(false);
         if (this.entity instanceof Breedable breedable) {
