@@ -1,6 +1,11 @@
 package su.nightexpress.combatpets.pet.impl;
 
+import org.bukkit.Location;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.Particle;
+import org.bukkit.block.Block;
+import org.bukkit.block.data.Waterlogged;
 import org.bukkit.boss.BossBar;
 import org.bukkit.entity.*;
 import org.bukkit.event.entity.EntityRegainHealthEvent;
@@ -8,6 +13,9 @@ import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.plugin.IllegalPluginAccessException;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.jetbrains.annotations.NotNull;
 import su.nightexpress.combatpets.PetsPlugin;
 import su.nightexpress.combatpets.Placeholders;
@@ -17,23 +25,38 @@ import su.nightexpress.combatpets.api.pet.event.PetLevelUpEvent;
 import su.nightexpress.combatpets.api.pet.type.CombatMode;
 import su.nightexpress.combatpets.api.pet.type.ExhaustReason;
 import su.nightexpress.combatpets.config.Config;
+import su.nightexpress.combatpets.config.Keys;
 import su.nightexpress.combatpets.config.Lang;
 import su.nightexpress.combatpets.data.impl.PetData;
+import su.nightexpress.combatpets.data.impl.PetUser;
 import su.nightexpress.combatpets.level.LevelingConfig;
 import su.nightexpress.combatpets.pet.AttributeRegistry;
+import su.nightexpress.combatpets.util.PetScheduler;
 import su.nightexpress.combatpets.util.PetUtils;
 import su.nightexpress.combatpets.wardrobe.PetWardrobe;
 import su.nightexpress.nightcore.menu.api.Menu;
 import su.nightexpress.nightcore.menu.impl.AbstractMenu;
+import su.nightexpress.nightcore.locale.entry.MessageLocale;
 import su.nightexpress.nightcore.util.Lists;
 import su.nightexpress.nightcore.util.NumberUtil;
+import su.nightexpress.nightcore.util.PDCUtil;
 import su.nightexpress.nightcore.util.TimeUtil;
 import su.nightexpress.nightcore.util.Version;
 import su.nightexpress.nightcore.util.placeholder.PlaceholderMap;
 import su.nightexpress.nightcore.util.text.NightMessage;
 import su.nightexpress.nightcore.util.wrapper.UniParticle;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 public final class PetInstance implements ActivePet {
+
+    private static final double       DOLPHINS_GRACE_RANGE_SQUARED = 100D;
+    private static final PotionEffect DOLPHINS_GRACE = new PotionEffect(PotionEffectType.DOLPHINS_GRACE, 100, 0);
+    private static final double WATER_RESTRICTED_RETURN_DISTANCE_SQUARED = 1024D;
+    private static final int    WATER_RESTRICTED_RETURN_DELAY_SECONDS = 10;
 
     private final PetsPlugin plugin;
     private final Player     owner;
@@ -41,6 +64,11 @@ public final class PetInstance implements ActivePet {
     private final PetData      data;
     private final Inventory    inventory;
     private final PlaceholderMap   placeholderMap;
+    private final AtomicBoolean removed;
+    private final AtomicBoolean moveToOwnerPending;
+    private final AtomicInteger waterRestrictedFarLandSeconds;
+    private final Set<Player> inventoryViewers = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean inventorySavePending = new AtomicBoolean();
 
     private boolean equipmentUnlocked;
     private long    nextRegenTime;
@@ -58,6 +86,9 @@ public final class PetInstance implements ActivePet {
         int inventorySize = this.getTier().hasInventory() ? this.getTier().getInventorySize() : 9;
         this.inventory = this.plugin.getServer().createInventory(this, inventorySize, NightMessage.asLegacy(this.getName()));
         this.placeholderMap = Placeholders.forHolder(this);
+        this.removed = new AtomicBoolean(false);
+        this.moveToOwnerPending = new AtomicBoolean(false);
+        this.waterRestrictedFarLandSeconds = new AtomicInteger(0);
 
         //this.dynamicEntity = DynamicEntity.create("robot_01", this.entity);
         //this.dynamicEntity.setName(this.petData.getName());
@@ -104,6 +135,74 @@ public final class PetInstance implements ActivePet {
         return this.inventory;
     }
 
+    public boolean isRemoved() {
+        return this.removed.get();
+    }
+
+    public void trackInventoryViewer(Player player) {
+        this.inventoryViewers.add(player);
+    }
+
+    public void forgetInventoryViewer(Player player) {
+        this.inventoryViewers.remove(player);
+    }
+
+    /** Inventory events precede vanilla's transfer. Observe the completed transaction next tick. */
+    public void queueInventorySave(Player viewer) {
+        if (!this.isOwner(viewer) || this.removed.get() || !this.inventorySavePending.compareAndSet(false, true)) return;
+        Runnable reset = () -> this.inventorySavePending.set(false);
+        try {
+            if (!PetScheduler.runAtEntity(this.plugin, viewer, () -> {
+                reset.run();
+                this.saveInventoryContents();
+            }, reset)) reset.run();
+        }
+        catch (IllegalPluginAccessException exception) {
+            reset.run();
+        }
+    }
+
+    /** Snapshot only the virtual storage; never query a retired pet entity. */
+    public void saveInventoryContents() {
+        if (this.removed.get() || !this.getTemplate().canHaveInventory() || !this.getTier().hasInventory()) return;
+        PetUser user = this.plugin.getUserManager().getLoaded(this.owner.getUniqueId());
+        if (user == null) return;
+        synchronized (user) {
+            ActivePet current = PetEntityBridge.getByPlayer(this.owner);
+            if (this.removed.get() || (current != null && current != this)
+                || user.getPet(this.getTemplate(), this.getTier()) != this.data) return;
+            this.data.setInventory(this.copyInventoryContents());
+            this.plugin.getUserManager().save(user);
+        }
+    }
+
+    private ItemStack[] copyInventoryContents() {
+        ItemStack[] contents = this.inventory.getContents();
+        for (int i = 0; i < contents.length; i++) {
+            if (contents[i] != null) contents[i] = contents[i].clone();
+        }
+        return contents;
+    }
+
+    private void closeViews() {
+        Set<Player> viewers = new java.util.HashSet<>(this.inventoryViewers);
+        viewers.add(this.owner);
+        for (Player player : viewers) {
+            Runnable close = () -> {
+                if (player.getOpenInventory().getTopInventory().getHolder(false) == this) {
+                    player.closeInventory();
+                }
+                else if (player == this.owner && AbstractMenu.getMenu(player) != null) {
+                    player.closeInventory();
+                }
+                if (player == this.owner) this.removeHealthBar();
+            };
+            if (Bukkit.isOwnedByCurrentRegion(player)) close.run();
+            else PetScheduler.runAtEntity(this.plugin, player, close);
+        }
+        this.inventoryViewers.clear();
+    }
+
     @Override
     public void setName(@NotNull String name) {
         this.data.setName(name);
@@ -140,6 +239,8 @@ public final class PetInstance implements ActivePet {
             return;
         }
 
+        this.updateWaterRestrictedOwnerState();
+
         if (this.entity.getNoDamageTicks() <= 0) {
             if (this.plugin.getPetNMS().hasNavigationPath(this.entity)) {
                 this.doExhaust(ExhaustReason.WALK);
@@ -150,6 +251,54 @@ public final class PetInstance implements ActivePet {
         }
         this.autoFood();
         this.updateHealthBar();
+    }
+
+    private void updateWaterRestrictedOwnerState() {
+        if (!this.isWaterRestricted() || !this.plugin.isEnabled()) return;
+
+        Location petLocation = this.entity.getLocation();
+        java.util.UUID petWorldId = petLocation.getWorld().getUID();
+        double petX = petLocation.getX();
+        double petY = petLocation.getY();
+        double petZ = petLocation.getZ();
+        boolean dolphin = this.entity.getType() == EntityType.DOLPHIN;
+
+        Runnable resetCounter = () -> this.waterRestrictedFarLandSeconds.set(0);
+        boolean ownerScheduled = this.scheduleMoveTask(this.owner, () -> {
+            if (this.removed.get() || !this.plugin.isEnabled() || !this.owner.isOnline()) {
+                resetCounter.run();
+                return;
+            }
+
+            Location ownerLocation = this.owner.getLocation();
+            if (!ownerLocation.getWorld().getUID().equals(petWorldId)) {
+                resetCounter.run();
+                return;
+            }
+
+            double deltaX = ownerLocation.getX() - petX;
+            double deltaY = ownerLocation.getY() - petY;
+            double deltaZ = ownerLocation.getZ() - petZ;
+            double distanceSquared = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+
+            if (dolphin && this.owner.isSwimming() && distanceSquared <= DOLPHINS_GRACE_RANGE_SQUARED) {
+                this.owner.addPotionEffect(DOLPHINS_GRACE);
+            }
+
+            if (this.owner.isInWater() || distanceSquared <= WATER_RESTRICTED_RETURN_DISTANCE_SQUARED) {
+                resetCounter.run();
+                return;
+            }
+
+            if (this.waterRestrictedFarLandSeconds.incrementAndGet() < WATER_RESTRICTED_RETURN_DELAY_SECONDS) return;
+
+            resetCounter.run();
+            this.scheduleMoveTask(this.entity, () -> {
+                if (this.removed.get() || !this.plugin.isEnabled() || !this.entity.isValid()) return;
+                this.returnToCollection();
+            }, () -> {});
+        }, resetCounter);
+        if (!ownerScheduled) resetCounter.run();
     }
 
     private void autoFood() {
@@ -171,6 +320,7 @@ public final class PetInstance implements ActivePet {
 
             if (this.doFeed(foodItem)) {
                 item.setAmount(item.getAmount() - 1);
+                this.saveInventoryContents();
                 break;
             }
         }
@@ -178,13 +328,9 @@ public final class PetInstance implements ActivePet {
 
     @Override
     public void remove() {
-        this.removeHealthBar();
+        if (!this.removed.compareAndSet(false, true)) return;
 
-        // Close owner's inventory if it's custom engine GUI.
-        Menu menu = AbstractMenu.getMenu(this.getOwner());
-        if (menu != null) {
-            this.getOwner().closeInventory();
-        }
+        this.closeViews();
 
         this.saveData(); // Save pet's settings to the data holder.
         this.getInventory().clear(); // Clear pet's inventory content.
@@ -196,6 +342,23 @@ public final class PetInstance implements ActivePet {
         }
 
         PetEntityBridge.removeHolder(this);
+    }
+
+    @Override
+    public void removeForShutdown() {
+        if (!this.removed.compareAndSet(false, true)) {
+            PetEntityBridge.removeHolder(this);
+            return;
+        }
+
+        try {
+            this.saveData();
+        }
+        finally {
+            this.getInventory().clear();
+            if (!this.entity.isDead()) this.entity.remove();
+            PetEntityBridge.removeHolder(this);
+        }
     }
 
     @Override
@@ -222,18 +385,27 @@ public final class PetInstance implements ActivePet {
 
     @Override
     public void handleSpawn() {
+        PDCUtil.set(this.entity, Keys.petEntity, true);
+
         if (this.getTemplate().canHaveInventory() && this.getTier().hasInventory()) {
             this.getInventory().setContents(this.data.getInventory().toArray(new ItemStack[0]));
         }
         if (this.getTemplate().canHaveEquipment() && this.getTier().hasEquipment()) {
             this.equipPet();
         }
+        EntityEquipment equipment = this.entity.getEquipment();
+        if (equipment != null) {
+            for (EquipmentSlot slot : EquipmentSlot.values()) {
+                equipment.setDropChance(slot, 0F);
+            }
+        }
         this.data.getWardrobe().dressUp(this.entity);
         this.updateAttributes();
 
         this.entity.setHealth(Math.min(this.data.getHealth(), this.getMaxHealth()));
         this.entity.setSilent(this.data.isSilent());
-        this.entity.setPersistent(true);
+        // PetData is the durable owner. Vanilla saves cannot restore our custom pet class/bridge.
+        this.entity.setPersistent(false);
         this.entity.setRemoveWhenFarAway(false);
         this.entity.setCanPickupItems(false);
         if (this.entity instanceof Breedable breedable) {
@@ -243,8 +415,18 @@ public final class PetInstance implements ActivePet {
             tameable.setTamed(true);
             tameable.setOwner(this.owner);
         }
-        if (this.entity instanceof AbstractHorse) {
+        String entityType = this.entity.getType().name();
+        if (this.entity instanceof AbstractHorse || entityType.equals("STRIDER") ||
+            entityType.equals("NAUTILUS") || entityType.equals("ZOMBIE_NAUTILUS") ||
+            entityType.equals("HAPPY_GHAST")) {
             this.plugin.getPetNMS().setSaddle(this.entity);
+        }
+
+        if (this.isWaterRestricted() && !isWater(this.entity.getLocation())) {
+            PetScheduler.runAtEntity(this.plugin, this.owner, () -> Lang.PET_SPAWN_WARNING_WATER_RESTRICTED.message().send(
+                this.owner,
+                replacer -> replacer.replace(this.data.replacePlaceholders())
+            ));
         }
 
         this.updateHealthBar();
@@ -279,26 +461,29 @@ public final class PetInstance implements ActivePet {
 
     @Override
     public void saveData() {
-        // Update customizer from entity's settings.
-        this.data.setWardrobe(PetWardrobe.of(this.entity));
+        synchronized (this.data) {
+            // Update customizer from entity's settings.
+            this.data.setWardrobe(PetWardrobe.of(this.entity));
 
-        // Update inventory content to pet data.
-        if (this.getTemplate().canHaveInventory() && this.getTier().hasInventory()) {
-            this.data.setInventory(this.getInventory().getContents());
-        }
+            // Update inventory content to pet data.
+            if (this.getTemplate().canHaveInventory() && this.getTier().hasInventory()) {
+                this.data.setInventory(this.copyInventoryContents());
+            }
 
-        // Update equipment to pet data.
-        if (this.getTemplate().canHaveEquipment() && this.getTier().hasEquipment()) {
-            EntityEquipment equipment = this.entity.getEquipment();
-            if (equipment != null) {
-                for (EquipmentSlot slot : EquipmentSlot.values()) {
-                    this.data.setEquipment(slot, equipment.getItem(slot));
+            // Update equipment to pet data.
+            if (this.getTemplate().canHaveEquipment() && this.getTier().hasEquipment()) {
+                EntityEquipment equipment = this.entity.getEquipment();
+                if (equipment != null) {
+                    for (EquipmentSlot slot : EquipmentSlot.values()) {
+                        if (PetUtils.isTransientEquipment(this.entity, slot)) continue;
+                        this.data.setEquipment(slot, equipment.getItem(slot));
+                    }
                 }
             }
-        }
 
-        // Update pet's health.
-        this.data.setHealth(this.entity.getHealth());
+            // Update pet's health.
+            this.data.setHealth(this.entity.getHealth());
+        }
     }
 
     @Override
@@ -318,6 +503,16 @@ public final class PetInstance implements ActivePet {
             double value = this.data.getAttributeValue(attribute);
             PetUtils.setAttribute(this.entity, attribute, value);
         });
+
+        double maxHealth = this.getMaxHealth();
+        if (this.entity.getHealth() > maxHealth) {
+            this.entity.setHealth(maxHealth);
+        }
+
+        double maxSaturation = Math.max(0D, this.getMaxSaturation());
+        if (this.data.getFoodLevel() > maxSaturation) {
+            this.data.setFoodLevel(maxSaturation);
+        }
     }
 
     @Override
@@ -341,7 +536,7 @@ public final class PetInstance implements ActivePet {
         }
 
         double maxHealth = this.getMaxHealth();
-        double result = Math.max(0, this.entity.getHealth() / maxHealth);
+        double result = HealthBarProgress.normalize(this.entity.getHealth(), maxHealth);
         String title = this.replacePlaceholders().apply(Config.PET_HEALTHBAR_TITLE.get());
 
         this.healthBar.setProgress(result);
@@ -500,7 +695,101 @@ public final class PetInstance implements ActivePet {
 
     @Override
     public void moveToOwner() {
-        this.entity.teleportAsync(this.getOwner().getLocation());
+        if (this.removed.get() || !this.plugin.isEnabled()) return;
+        if (!this.moveToOwnerPending.compareAndSet(false, true)) return;
+
+        Runnable release = () -> this.moveToOwnerPending.set(false);
+        boolean ownerScheduled = this.scheduleMoveTask(this.owner, () -> {
+            if (this.removed.get() || !this.plugin.isEnabled() || !this.owner.isOnline()) {
+                release.run();
+                return;
+            }
+
+            Location destination = this.owner.getLocation().clone();
+            boolean waterDestination = isWater(destination);
+            boolean petScheduled = this.scheduleMoveTask(this.entity, () -> {
+                if (this.removed.get() || !this.plugin.isEnabled() || !this.entity.isValid()) {
+                    release.run();
+                    return;
+                }
+
+                if (this.isWaterRestricted() && !waterDestination) {
+                    release.run();
+                    this.returnToCollection();
+                    return;
+                }
+
+                // Shiroha/Folia recreates an entity through the vanilla EntityType
+                // factory when teleportAsync crosses a region. That replacement no
+                // longer has CombatPets' custom class or AI. Save and remove the old
+                // pet, then use the normal spawn path to rebuild the same PetData.
+                this.plugin.getPetManager().removePet(this);
+                boolean respawnScheduled = this.scheduleMoveTask(this.owner, () -> {
+                    release.run();
+                    if (!this.plugin.isEnabled() || !this.owner.isOnline()) return;
+                    if (this.plugin.getPetManager().hasActivePet(this.owner)) return;
+
+                    this.plugin.getPetManager().spawnPet(this.owner, this.data);
+                }, release);
+                if (!respawnScheduled) release.run();
+            }, release);
+
+            if (!petScheduled) release.run();
+        }, release);
+
+        if (!ownerScheduled) release.run();
+    }
+
+    @Override
+    public void returnToCollection() {
+        this.returnToCollection(Lang.PET_DESPAWN_NO_WATER);
+    }
+
+    private void returnToCollection(@NotNull MessageLocale message) {
+        if (!this.plugin.isEnabled() || !this.removed.compareAndSet(false, true)) return;
+
+        this.closeViews();
+        this.saveData();
+        this.getInventory().clear();
+        if (!this.entity.isDead()) {
+            this.getTemplate().getDespawnParticle().play(this.entity.getEyeLocation(), 0.5, 0.1, 25);
+            this.entity.remove();
+        }
+        PetEntityBridge.removeHolder(this);
+
+        PetScheduler.runAtEntity(this.plugin, this.owner, () -> {
+            this.removeHealthBar();
+            Menu menu = AbstractMenu.getMenu(this.owner);
+            if (menu != null) this.owner.closeInventory();
+
+            this.plugin.getUserManager().save(this.plugin.getUserManager().getOrFetch(this.owner));
+            message.message().send(
+                this.owner,
+                replacer -> replacer.replace(this.data.replacePlaceholders())
+            );
+        });
+    }
+
+    private boolean isWaterRestricted() {
+        String type = this.entity.getType().name();
+        return type.equals("DOLPHIN") || type.equals("GUARDIAN");
+    }
+
+    private static boolean isWater(@NotNull Location location) {
+        Block block = location.getBlock();
+        if (block.getType() == Material.WATER) return true;
+        return block.getBlockData() instanceof Waterlogged waterlogged && waterlogged.isWaterlogged();
+    }
+
+    private boolean scheduleMoveTask(@NotNull Entity target, @NotNull Runnable task, @NotNull Runnable retired) {
+        try {
+            return PetScheduler.runAtEntity(this.plugin, target, task, retired);
+        }
+        catch (IllegalPluginAccessException exception) {
+            retired.run();
+            if (this.plugin.isEnabled()) throw exception;
+            return false;
+        }
     }
 
     public void resetLeveling() {
@@ -659,5 +948,17 @@ public final class PetInstance implements ActivePet {
 
     public void toggleCombatMode() {
         this.data.setCombatMode(Lists.next(this.data.getCombatMode()));
+    }
+}
+
+final class HealthBarProgress {
+
+    private HealthBarProgress() {
+    }
+
+    static double normalize(double health, double maxHealth) {
+        if (!Double.isFinite(health) || !Double.isFinite(maxHealth) || maxHealth <= 0D) return 0D;
+
+        return Math.clamp(health / maxHealth, 0D, 1D);
     }
 }

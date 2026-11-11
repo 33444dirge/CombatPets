@@ -6,20 +6,62 @@ import su.nightexpress.combatpets.api.pet.Template;
 import su.nightexpress.combatpets.api.pet.Tier;
 import su.nightexpress.combatpets.util.PetUtils;
 import su.nightexpress.nightcore.db.AbstractUser;
+import su.nightexpress.nightcore.util.TimeUtil;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class PetUser extends AbstractUser {
 
     private final Map<String, PetData> petMap;
 
     private boolean loaded;
+    private long requestedSaveVersion;
+    private long persistedSaveVersion;
+    private long requestedSaveTime = -1;
+
+    /** Independent of NightCore's unconditional disableAutoSave completion callback. */
+    public synchronized void markSaveRequested() {
+        this.requestedSaveTime = this.getAutoSaveTime();
+        this.requestedSaveVersion++;
+    }
+
+    public synchronized long getSaveVersion() {
+        return this.requestedSaveVersion;
+    }
+
+    /** Only a confirmed JDBC commit may acknowledge the version it actually wrote. */
+    public synchronized void acknowledgeSave(long version) {
+        this.persistedSaveVersion = Math.max(this.persistedSaveVersion, version);
+    }
+
+    @Override
+    public synchronized void disableAutoSave() {
+        // Serialize NightCore's completion with UserManager.save's deadline + version publication.
+        super.disableAutoSave();
+    }
+
+    @Override
+    public synchronized boolean isAutoSavePlanned() {
+        return this.requestedSaveVersion > this.persistedSaveVersion || super.isAutoSavePlanned();
+    }
+
+    @Override
+    public synchronized boolean isAutoSaveReady() {
+        return this.requestedSaveVersion > this.persistedSaveVersion
+            ? TimeUtil.isPassed(this.requestedSaveTime) : super.isAutoSaveReady();
+    }
+
+    @Override
+    public synchronized boolean isCacheExpired() {
+        return !this.isAutoSavePlanned() && super.isCacheExpired();
+    }
 
     @NotNull
     public static PetUser create(@NotNull UUID uuid, @NotNull String name) {
         long dateCreated = System.currentTimeMillis();
         long lastOnline = System.currentTimeMillis();
-        Map<String, PetData> petMap = new HashMap<>();
+        Map<String, PetData> petMap = new ConcurrentHashMap<>();
 
         PetUser user = new PetUser(uuid, name, dateCreated, lastOnline, petMap);
         user.load(new HashMap<>());
@@ -33,7 +75,7 @@ public class PetUser extends AbstractUser {
                    @NotNull Map<String, PetData> petMap
     ) {
         super(uuid, name, dateCreated, lastOnline);
-        this.petMap = new HashMap<>(petMap);
+        this.petMap = new ConcurrentHashMap<>(petMap);
         this.loaded = true;
     }
 
@@ -41,7 +83,7 @@ public class PetUser extends AbstractUser {
         return this.loaded;
     }
 
-    public void load(@NotNull Map<String, PetData> petMap) {
+    public synchronized void load(@NotNull Map<String, PetData> petMap) {
         this.petMap.clear();
         this.petMap.putAll(petMap);
         this.petMap.values().removeIf(Objects::isNull);
@@ -54,12 +96,24 @@ public class PetUser extends AbstractUser {
         return this.petMap;
     }
 
-    public void addPet(@NotNull PetData petData) {
+    /** Returns detached pet values for asynchronous persistence. */
+    @NotNull
+    public synchronized Map<String, PetData> getPetsSnapshot() {
+        Map<String, PetData> snapshot = new HashMap<>();
+        this.petMap.forEach((key, data) -> snapshot.put(key, data.copyForPersistence()));
+        return Map.copyOf(snapshot);
+    }
+
+    public synchronized void addPet(@NotNull PetData petData) {
         this.petMap.putIfAbsent(PetUtils.getPetKey(petData.getTier(), petData.getConfig()), petData);
         petData.refresh();
     }
 
-    public boolean removePet(@NotNull Template config, @NotNull Tier tier) {
+    public synchronized void putPet(@NotNull PetData petData) {
+        this.petMap.put(PetUtils.getPetKey(petData.getTier(), petData.getConfig()), petData);
+    }
+
+    public synchronized boolean removePet(@NotNull Template config, @NotNull Tier tier) {
         return this.petMap.remove(PetUtils.getPetKey(tier, config)) != null;
     }
 

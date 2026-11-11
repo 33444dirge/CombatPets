@@ -1,6 +1,9 @@
 package su.nightexpress.combatpets.pet.listener;
 
+import com.destroystokyo.paper.event.entity.WitchConsumePotionEvent;
 import org.bukkit.Material;
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -9,6 +12,7 @@ import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.entity.*;
 import org.bukkit.event.player.PlayerShearEntityEvent;
+import org.bukkit.event.world.EntitiesLoadEvent;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
@@ -19,6 +23,7 @@ import su.nightexpress.combatpets.config.Config;
 import su.nightexpress.combatpets.data.impl.PetUser;
 import su.nightexpress.combatpets.pet.PetManager;
 import su.nightexpress.combatpets.util.PetUtils;
+import su.nightexpress.combatpets.util.PetScheduler;
 import su.nightexpress.nightcore.manager.AbstractListener;
 import su.nightexpress.nightcore.util.ItemUtil;
 import su.nightexpress.nightcore.util.random.Rnd;
@@ -33,6 +38,30 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
     public PetGenericListener(@NotNull PetsPlugin plugin, @NotNull PetManager petManager) {
         super(plugin);
         this.petManager = petManager;
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onOrphanPetSpawn(CreatureSpawnEvent event) {
+        if (this.petManager.isOrphanPet(event.getEntity())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPetEntitiesLoad(EntitiesLoadEvent event) {
+        for (Entity entity : event.getEntities()) {
+            if (!(entity instanceof LivingEntity living)) continue;
+            if (Bukkit.isOwnedByCurrentRegion(living)) this.petManager.removeOrphanPet(living);
+            else PetScheduler.runAtEntity(this.plugin, living, () -> this.petManager.removeOrphanPet(living));
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPetWitchConsumePotion(WitchConsumePotionEvent event) {
+        ActivePet activePet = this.petManager.getPetByMob(event.getEntity());
+        if (activePet == null) return;
+
+        // Vanilla has already cleared the temporary potion from the main hand.
+        // Restore the equipment kept in PetData without changing potion effects.
+        activePet.equipPet();
     }
 
 //    @EventHandler(priority = EventPriority.MONITOR)
@@ -51,7 +80,13 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
     public void onPetDeath(EntityDeathEvent event) {
         LivingEntity entity = event.getEntity();
         ActivePet activePet = this.petManager.getPetByMob(entity);
-        if (activePet == null) return;
+        if (activePet == null) {
+            if (this.petManager.isPetEntity(entity)) {
+                event.getDrops().clear();
+                event.setDroppedExp(0);
+            }
+            return;
+        }
 
         PetDeathEvent deathEvent = new PetDeathEvent(activePet, event);
         deathEvent.setPermanentDeath(Config.PET_PERMANENT_DEATH.get());
@@ -65,12 +100,14 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
             deathEvent.setDropEquipment(true);
         }
 
+        // Capture the contents before handleDeath() removes and clears the pet.
+        ItemStack[] inventoryContents = activePet.getInventory().getContents();
+
         plugin.getPetManager().handleDeath(activePet);
         plugin.getPluginManager().callEvent(deathEvent);
 
         if (deathEvent.isDropInventory()) {
-            event.getDrops().addAll(Arrays.asList(activePet.getInventory().getContents()));
-            activePet.getInventory().clear();
+            event.getDrops().addAll(Arrays.asList(inventoryContents));
         }
 
         if (deathEvent.isDropEquipment()) {
@@ -85,6 +122,19 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
             Player owner = activePet.getOwner();
             PetUser user = plugin.getUserManager().getOrFetch(owner);
             this.petManager.removeFromCollection(user, activePet.getTier(), activePet.getTemplate());
+        }
+    }
+
+    /**
+     * Pets must never be replaced by vanilla entity transformations. A
+     * transformation creates a new entity with a new UUID, which would break
+     * the in-memory pet bridge, owner protection and the health bar.
+     */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onPetTransform(EntityTransformEvent event) {
+        if (!(event.getEntity() instanceof LivingEntity entity)) return;
+        if (this.petManager.isPetEntity(entity)) {
+            event.setCancelled(true);
         }
     }
 
@@ -137,9 +187,28 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onPetVanillaPortal(EntityPortalEvent event) {
-        if (event.getEntity() instanceof LivingEntity livingEntity) {
-            event.setCancelled(this.petManager.isPetEntity(livingEntity));
+        if (this.containsPet(event.getEntity())) {
+            event.setCancelled(true);
         }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onPetVanillaPortalEnter(EntityPortalEnterEvent event) {
+        if (this.containsPet(event.getEntity())) {
+            event.setCancelled(true);
+        }
+    }
+
+    private boolean containsPet(@NotNull Entity entity) {
+        if (entity instanceof LivingEntity livingEntity && this.petManager.isPetEntity(livingEntity)) return true;
+
+        // CraftEntity#getPassengers copies the list, even when it is empty.
+        if (entity.isEmpty()) return false;
+
+        for (Entity passenger : entity.getPassengers()) {
+            if (this.containsPet(passenger)) return true;
+        }
+        return false;
     }
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
@@ -170,7 +239,9 @@ public class PetGenericListener extends AbstractListener<PetsPlugin> {
         LivingEntity entity = PetUtils.getParent(event.getEntity());
         if (entity == null) return;
 
-        event.setCancelled(this.petManager.isPetEntity(entity));
+        if (this.petManager.isPetEntity(entity)) {
+            event.blockList().clear();
+        }
     }
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
